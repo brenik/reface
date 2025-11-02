@@ -1,0 +1,37 @@
+[package]
+name = "reface-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web server
+actix-web = "4.11.0"
+actix-multipart = "0.7.2"
+
+# PyTorch bindings
+tch = "0.22.0"
+
+# Image processing
+image = "0.25.8"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+
+# Async
+tokio = { version = "1.48.0", features = ["full"] }
+futures-util = "0.3"
+
+# Logging
+env_logger = "0.11"
+log = "0.4"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
