@@ -1,0 +1,31 @@
+### Health check
+GET http://localhost:8080/health
+
+###
+
+### 1. Predict (JSON response only)
+POST http://localhost:8080/predict
+Content-Type: multipart/form-data; boundary=X
+
+--X
+Content-Disposition: form-data; name="image"; filename="image.jpg"
+Content-Type: image/jpeg
+
+< ../images/00000.png
+--X--
+
+###
+
+### 2. Images (returns image with prediction in headers)
+POST http://localhost:8080/images
+Content-Type: multipart/form-data; boundary=X
+
+--X
+Content-Disposition: form-data; name="image"; filename="test.jpg"
+Content-Type: image/jpeg
+
+< ../images/00001.png
+--X--
+
+###
+

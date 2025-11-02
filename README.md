@@ -26,9 +26,15 @@ Rust web server (Actix) serving a deep learning model for real-time facial analy
 ## Project Structure
 
 ```
-reface/
+rust_reface/
+├── http/
+│   └── api_examples.http        # HTTP client tests
+├── images/
+│   ├── 00000.png                # Sample images for testing
+│   ├── 00001.png
+│   └── ...
 ├── models/
-│   └── agegenderemo.pt           # TorchScript model (ready for Rust)
+│   └── agegenderemo_traced.pt   # TorchScript model (ready for Rust)
 ├── scripts/                      # Python (model training/export only)
 │   ├── export_torchscript.py    # Convert .pt → TorchScript
 │   ├── model_architecture.py    # PyTorch model definition
@@ -67,7 +73,76 @@ cargo run --release
 
 Server starts on `http://0.0.0.0:8080`
 
-### 3. API Usage
+### 3. Testing with HTTP Client
+
+Use the provided `.http` file in your IDE (IntelliJ IDEA, VS Code with REST Client extension):
+
+```
+http/
+└── api_examples.http
+```
+
+Open `http/api_examples.http` and click the green play button next to each request:
+
+**1. Health check:**
+```http
+GET http://localhost:8080/health
+```
+
+**2. JSON prediction:**
+```http
+POST http://localhost:8080/predict
+Content-Type: multipart/form-data; boundary=X
+
+--X
+Content-Disposition: form-data; name="image"; filename="image.jpg"
+Content-Type: image/jpeg
+
+< ../images/00000.png
+--X--
+```
+
+Response:
+```json
+{
+  "age": 1.3,
+  "gender": 1,
+  "gender_name": "male",
+  "emotion": "neutral",
+  "emotion_confidence": 0.833,
+  "emotions": {
+    "neutral": 0.833,
+    "happiness": 0.039,
+    "sadness": 0.068,
+    ...
+  }
+}
+```
+
+**3. Image with prediction in headers:**
+```http
+POST http://localhost:8080/images
+Content-Type: multipart/form-data; boundary=X
+
+--X
+Content-Disposition: form-data; name="image"; filename="test.jpg"
+Content-Type: image/jpeg
+
+< ../images/00001.png
+--X--
+```
+
+Returns the image with predictions in HTTP headers:
+```
+X-Prediction-Age: 29.1
+X-Prediction-Gender: female
+X-Prediction-Gender-Code: 0
+X-Prediction-Emotion: happiness
+X-Prediction-Emotion-Confidence: 0.998
+X-Prediction-Emotions: {"happiness":0.998,"neutral":0.0005,...}
+```
+
+### 4. API Usage
 
 **Endpoint**: `POST /predict`
 
