@@ -33,13 +33,17 @@ rust_reface/
 │   ├── 00000.png                # Sample images for testing
 │   ├── 00001.png
 │   └── ...
+├── input/
+│   ├── 00003.png                # Sample images for batch testing
+│   ├── 00004.png
+│   └── ...
 ├── models/
 │   └── agegenderemo_traced.pt   # TorchScript model (ready for Rust)
 ├── scripts/                      # Python (model training/export only)
 │   ├── export_torchscript.py    # Convert .pt → TorchScript
 │   ├── model_architecture.py    # PyTorch model definition
-│   ├── train_ffhq_soft.py       # Training script
-│   └── test_soft.py             # Python testing
+│   ├── train_model.py       # Training script
+│   └── test_model.py             # Python testing
 ├── src/
 │   ├── main.rs                  # API server
 │   └── model.rs                 # Inference engine
@@ -73,7 +77,16 @@ cargo run --release
 
 Server starts on `http://0.0.0.0:8080`
 
-### 3. Testing with HTTP Client
+### 3. Environment Variables
+
+**Logging levels** (via `RUST_LOG`):
+```bash
+RUST_LOG=error cargo run --release   # Only errors
+RUST_LOG=info cargo run --release    # Production (default)
+RUST_LOG=debug cargo run --release   # Detailed debugging
+```
+
+### 4. Testing with HTTP Client
 
 Use the provided `.http` file in your IDE (IntelliJ IDEA, VS Code with REST Client extension):
 
@@ -109,11 +122,11 @@ Response:
   "gender": 1,
   "gender_name": "male",
   "emotion": "neutral",
-  "emotion_confidence": 0.833,
+  "emotion_confidence": 83.30,
   "emotions": {
-    "neutral": 0.833,
-    "happiness": 0.039,
-    "sadness": 0.068,
+    "neutral": 83.30,
+    "happiness": 3.90,
+    "sadness": 6.80,
     ...
   }
 }
@@ -139,7 +152,7 @@ X-Prediction-Gender: female
 X-Prediction-Gender-Code: 0
 X-Prediction-Emotion: happiness
 X-Prediction-Emotion-Confidence: 0.998
-X-Prediction-Emotions: {"happiness":0.998,"neutral":0.0005,...}
+X-Prediction-Emotions: {"happiness":99.8,"neutral":0.05,...}
 ```
 
 ### 4. API Usage
@@ -161,17 +174,41 @@ curl -X POST http://localhost:8080/predict \
   "emotion": "happiness",
   "emotion_confidence": 0.89,
   "emotions": {
-    "happiness": 0.89,
-    "neutral": 0.08,
-    "surprise": 0.02,
-    "anger": 0.005,
-    "contempt": 0.003,
-    "sadness": 0.002,
-    "fear": 0.0005,
-    "disgust": 0.0003
+    "happiness": 89.00,
+    "neutral": 8.00,
+    "surprise": 2.00,
+    "anger": 0.50,
+    "contempt": 0.30,
+    "sadness": 0.20,
+    "fear": 0.05,
+    "disgust": 0.03
   }
 }
 ```
+
+**Batch Processing** (all images in `input/` folder):
+```bash
+curl http://localhost:8080/predict_input
+```
+
+Returns JSON array with predictions for all images:
+```json
+[
+  {
+    "filename": "photo1.jpg",
+    "age": 25.3,
+    "gender": 1,
+    "gender_name": "male",
+    "emotions": {"happiness": 89.00, "neutral": 8.00, ...}
+  },
+  {
+    "filename": "photo2.jpg",
+    "age": 32.1,
+    "gender": 0,
+    "gender_name": "female",
+    "emotions": {"neutral": 75.00, "happiness": 15.00, ...}
+  }
+]
 
 **Health Check**:
 ```bash
@@ -186,7 +223,7 @@ The model is trained in PyTorch but **runs in Rust**. Here's the workflow:
 
 ```bash
 cd scripts
-python3 train_ffhq_soft.py
+python3 train_model.py
 ```
 
 **Output**: `models/agegenderemo.pt` (state dict, ~36MB)
@@ -222,9 +259,9 @@ let model = tch::CModule::load_on_device(model_path, device)?;
 Model outputs **probability distribution** over all emotions, not just the winner:
 ```json
 "emotions": {
-  "happiness": 0.65,    // Primary
-  "neutral": 0.25,      // Secondary
-  "surprise": 0.08,     // Tertiary
+  "happiness": 65.00,    // Primary
+  "neutral": 25.00,      // Secondary
+  "surprise": 8.00,     // Tertiary
   ...
 }
 ```
@@ -234,11 +271,6 @@ Better captures mixed/subtle emotions.
 ### Gender Encoding
 - Training: `1 = male`, `0 = female`
 - Model output: sigmoid probability (>0.5 = male)
-
-### Image Preprocessing
-- Resize to 224×224
-- RGB normalization (ImageNet stats)
-- Handled in Rust (no Python)
 
 ## Performance
 
@@ -272,7 +304,7 @@ pip install torch pillow numpy tqdm
 ### Testing Python Model
 ```bash
 cd scripts
-python3 test_soft.py
+python3 test_model.py
 ```
 
 ### Rust Rebuild

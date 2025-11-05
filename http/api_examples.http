@@ -1,7 +1,8 @@
 ### Health check
 GET http://localhost:8080/health
 
-###
+### Predict from input directory (all images)
+GET http://localhost:8080/predict_input
 
 ### 1. Predict (JSON response only)
 POST http://localhost:8080/predict

@@ -15,14 +15,21 @@ struct PredictionResponse {
     age: f32,
     gender: u8,
     gender_name: String,
-    emotion: String,
-    emotion_confidence: f32,
     emotions: HashMap<String, f32>,
 }
 
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Serialize)]
+struct BatchPredictionItem {
+    filename: String,
+    age: f32,
+    gender: u8,
+    gender_name: String,
+    emotions: HashMap<String, f32>,
 }
 
 async fn predict(
@@ -64,7 +71,7 @@ async fn predict(
         }));
     }
 
-    info!("Received image data: {} bytes", image_data.len());
+    debug!("Received {} bytes", image_data.len());
 
     if image_data.len() < 4 {
         error!("Image data too small (< 4 bytes)");
@@ -73,12 +80,7 @@ async fn predict(
         }));
     }
 
-    let is_valid_image = matches!(
-        &image_data[0..2],
-        b"\xFF\xD8" | b"\x89\x50" | b"BM" | b"GI"
-    );
-
-    if !is_valid_image {
+    if !is_valid_image_format(&image_data) {
         error!("Invalid image format - magic bytes: {:02X} {:02X}",
             image_data[0], image_data[1]);
         return Ok(HttpResponse::BadRequest().json(ErrorResponse {
@@ -86,12 +88,16 @@ async fn predict(
         }));
     }
 
-    debug!("Valid image format detected");
+    let predictor = match predictor.lock() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to acquire predictor lock: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Server is busy, please try again".to_string(),
+            }));
+        }
+    };
 
-    info!("Acquiring predictor lock...");
-    let predictor = predictor.lock().unwrap();
-
-    info!("Running prediction...");
     match predictor.predict(&image_data) {
         Ok(result) => {
             info!("✓ Prediction successful!");
@@ -106,26 +112,15 @@ async fn predict(
                 age: result.age,
                 gender: result.gender,
                 gender_name: gender_name.to_string(),
-                emotion: result.emotion_name.clone(),
-                emotion_confidence: result.emotion_confidence,
-                emotions: result.emotion_probabilities.clone(),
+                emotions: result.emotions.clone(),
             };
 
-            info!(
-                "RESULT: age={:.1}, gender={}, emotion={} ({:.2}%)",
-                result.age,
-                gender_name,
-                result.emotion_name,
-                result.emotion_confidence * 100.0
-            );
-            info!("=== REQUEST COMPLETE ===\n");
+            info!("Prediction: age={:.1}, gender={}", result.age, gender_name);
 
             Ok(HttpResponse::Ok().json(response))
         }
         Err(e) => {
-            error!("✗ Prediction failed!");
-            error!("Error: {:#}", e);
-            error!("=== REQUEST FAILED ===\n");
+            error!("Prediction failed: {:#}", e);
 
             Ok(HttpResponse::InternalServerError().json(ErrorResponse {
                 error: format!("Prediction failed: {}", e),
@@ -134,11 +129,38 @@ async fn predict(
     }
 }
 
+fn is_valid_image_format(data: &[u8]) -> bool {
+    if data.len() < 2 {
+        return false;
+    }
+
+    let magic_bytes = &data[0..2];
+
+    magic_bytes == b"\xFF\xD8"  // JPEG
+        || magic_bytes == b"\x89\x50"  // PNG
+        || magic_bytes == b"BM"        // BMP
+        || magic_bytes == b"GI"        // GIF
+}
+
+fn detect_image_mime_type(data: &[u8]) -> &'static str {
+    if data.len() < 2 {
+        return "application/octet-stream";
+    }
+
+    match &data[0..2] {
+        b"\xFF\xD8" => "image/jpeg",
+        b"\x89\x50" => "image/png",
+        b"BM" => "image/bmp",
+        b"GI" => "image/gif",
+        _ => "application/octet-stream",
+    }
+}
+
 async fn predict_image_multipart(
     mut payload: Multipart,
     predictor: web::Data<Arc<Mutex<AgeGenderEmotionPredictor>>>,
 ) -> Result<HttpResponse> {
-    info!("=== NEW IMAGE PREDICTION REQUEST ===");
+    debug!("New prediction request");
 
     let mut image_data = Vec::new();
     let mut original_filename = String::from("prediction.jpg");
@@ -162,51 +184,51 @@ async fn predict_image_multipart(
             .body("No image data received"));
     }
 
-    info!("Received image: {} ({} bytes)", original_filename, image_data.len());
+    debug!("Processing: {} ({} bytes)", original_filename, image_data.len());
 
-    let predictor = predictor.lock().unwrap();
+    let predictor = match predictor.lock() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to acquire predictor lock: {}", e);
+            return Ok(HttpResponse::InternalServerError()
+                .content_type("text/plain")
+                .body("Server is busy, please try again"));
+        }
+    };
 
     match predictor.predict(&image_data) {
         Ok(result) => {
-            info!("✓ Prediction successful!");
-
             let gender_name = if result.gender == 1 { "male" } else { "female" };
 
             let result_filename = format!(
-                "age{:.0}_{}_{}_{:.0}pct_{}",
+                "age{:.0}_{}_ {}",
                 result.age,
                 gender_name,
-                result.emotion_name,
-                result.emotion_confidence * 100.0,
                 original_filename
             );
 
             info!(
-                "RESULT: age={:.1}, gender={}, emotion={} ({:.2}%)",
-                result.age, gender_name, result.emotion_name,
-                result.emotion_confidence * 100.0
+                "RESULT: age={:.1}, gender={}",
+                result.age, gender_name
             );
-            info!("=== REQUEST COMPLETE ===\n");
 
-            let emotions_json = serde_json::to_string(&result.emotion_probabilities)
+            let emotions_json = serde_json::to_string(&result.emotions)
                 .unwrap_or_else(|_| "{}".to_string());
 
+            let content_type = detect_image_mime_type(&image_data);
+
             Ok(HttpResponse::Ok()
-                .insert_header(("Content-Type", "image/jpeg"))
+                .insert_header(("Content-Type", content_type))
                 .insert_header(("Content-Disposition",
                                 format!("inline; filename=\"{}\"", result_filename)))
                 .insert_header(("X-Prediction-Age", result.age.to_string()))
                 .insert_header(("X-Prediction-Gender", gender_name))
                 .insert_header(("X-Prediction-Gender-Code", result.gender.to_string()))
-                .insert_header(("X-Prediction-Emotion", result.emotion_name.clone()))
-                .insert_header(("X-Prediction-Emotion-Confidence",
-                                result.emotion_confidence.to_string()))
                 .insert_header(("X-Prediction-Emotions", emotions_json))
                 .body(image_data))
         }
         Err(e) => {
-            error!("✗ Prediction failed: {}", e);
-            error!("=== REQUEST FAILED ===\n");
+            error!("Prediction failed: {}", e);
 
             Ok(HttpResponse::InternalServerError()
                 .content_type("text/plain")
@@ -217,6 +239,82 @@ async fn predict_image_multipart(
 
 async fn health() -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "ok"})))
+}
+
+async fn predict_input(
+    predictor: web::Data<Arc<Mutex<AgeGenderEmotionPredictor>>>,
+) -> Result<HttpResponse> {
+    debug!("Batch prediction from input directory");
+
+    let input_dir = "input/";
+    let path = std::path::Path::new(input_dir);
+
+    if !path.exists() || !path.is_dir() {
+        return Ok(HttpResponse::BadRequest().json(ErrorResponse {
+            error: format!("Directory does not exist: {}", input_dir),
+        }));
+    }
+
+    let images = get_all_images_from_dir(path);
+
+    if images.is_empty() {
+        return Ok(HttpResponse::NotFound().json(ErrorResponse {
+            error: "No images found in input directory".to_string(),
+        }));
+    }
+
+    info!("Processing {} images from input/", images.len());
+
+    let mut results = Vec::new();
+    let predictor = match predictor.lock() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to acquire predictor lock: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Server is busy, please try again".to_string(),
+            }));
+        }
+    };
+
+    for (idx, img_path) in images.iter().enumerate() {
+        let filename = img_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        debug!("[{}/{}] {}", idx + 1, images.len(), filename);
+
+        match std::fs::read(&img_path) {
+            Ok(image_data) => {
+                match predictor.predict(&image_data) {
+                    Ok(result) => {
+                        let gender_name = if result.gender == 1 { "male" } else { "female" };
+
+                        info!("  ✓ age={:.1}, gender={}",
+                              result.age, gender_name);
+
+                        results.push(BatchPredictionItem {
+                            filename,
+                            age: result.age,
+                            gender: result.gender,
+                            gender_name: gender_name.to_string(),
+                            emotions: result.emotions,
+                        });
+                    }
+                    Err(e) => {
+                        error!("Failed {}: {}", filename, e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Cannot read {}: {}", filename, e);
+            }
+        }
+    }
+
+    info!("Batch complete: {}/{} successful", results.len(), images.len());
+
+    Ok(HttpResponse::Ok().json(results))
 }
 
 #[actix_web::main]
@@ -259,9 +357,31 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .route("/predict", web::post().to(predict))
             .route("/images", web::post().to(predict_image_multipart))
+            .route("/predict_input", web::get().to(predict_input))
             .route("/health", web::get().to(health))
     })
         .bind(("0.0.0.0", 8080))?
         .run()
         .await
+}
+
+fn get_all_images_from_dir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut images: Vec<_> = entries
+            .flatten()
+            .filter(|e| {
+                let path = e.path();
+                path.is_file() && path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|s| matches!(s.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "bmp" | "gif"))
+                    .unwrap_or(false)
+            })
+            .map(|e| e.path())
+            .collect();
+
+        images.sort();
+        images
+    } else {
+        Vec::new()
+    }
 }
